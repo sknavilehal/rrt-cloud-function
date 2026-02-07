@@ -149,9 +149,9 @@ app.post('/sos', async (req, res) => {
         notification: {
           icon: 'ic_notification',
           color: '#FF0000',
-          sound: 'alert_sound',
+          sound: 'default',
           priority: 'high',
-          defaultSound: false
+          defaultSound: true
         }
       },
       apns: {
@@ -162,7 +162,7 @@ app.post('/sos', async (req, res) => {
               title: '🚨 Emergency Alert',
               body: `Help needed. ${userName} • ${userLocation}`
             },
-            sound: 'alert_sound.wav',
+            sound: 'default',
             badge: 1
           }
         }
@@ -249,9 +249,9 @@ app.post('/test-push', async (req, res) => {
         notification: {
           icon: 'ic_notification',
           color: '#FF0000',
-          sound: 'alert_sound',
+          sound: 'default',
           priority: 'high',
-          defaultSound: false
+          defaultSound: true
         }
       },
       apns: {
@@ -262,7 +262,7 @@ app.post('/test-push', async (req, res) => {
               title: '🧪 Test Emergency Alert',
               body: `Test SOS alert in ${targetDistrict.toUpperCase()} area`
             },
-            sound: 'alert_sound.wav',
+            sound: 'default',
             badge: 1
           }
         }
