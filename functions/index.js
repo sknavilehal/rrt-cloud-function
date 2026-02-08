@@ -76,15 +76,20 @@ app.post('/sos', async (req, res) => {
           timestamp: timestamp || Date.now().toString(),
           sender_id: sender_id || 'unknown'
         },
-        android: {
-          notification: {
-            icon: 'ic_notification',
-            color: '#00FF00',
-            sound: 'default',
-            priority: 'high'
-          }
-        },
+      android: {
+        priority: 'high',  // Critical: Forces immediate delivery bypassing Doze mode
+        notification: {
+          channelId: 'sos_alerts',  // Use high-importance channel
+          icon: 'ic_notification',
+          color: '#00FF00',
+          sound: 'default',
+          priority: 'high'
+        }
+      },
         apns: {
+          headers: {
+            'apns-priority': '10'  // High priority for iOS
+          },
           payload: {
             aps: {
               contentAvailable: true,
@@ -146,7 +151,9 @@ app.post('/sos', async (req, res) => {
         sender_id: sender_id || 'unknown'
       },
       android: {
+        priority: 'high',  // Critical: Forces immediate delivery bypassing Doze mode
         notification: {
+          channelId: 'sos_alerts',  // Use high-importance channel
           icon: 'ic_notification',
           color: '#FF0000',
           sound: 'default',
@@ -155,6 +162,9 @@ app.post('/sos', async (req, res) => {
         }
       },
       apns: {
+        headers: {
+          'apns-priority': '10'  // High priority for iOS
+        },
         payload: {
           aps: {
             contentAvailable: true, 
@@ -246,7 +256,9 @@ app.post('/test-push', async (req, res) => {
         sender_id: 'test-endpoint'
       },
       android: {
+        priority: 'high',  // Critical: Forces immediate delivery bypassing Doze mode
         notification: {
+          channelId: 'sos_alerts',  // Use high-importance channel
           icon: 'ic_notification',
           color: '#FF0000',
           sound: 'default',
@@ -255,6 +267,9 @@ app.post('/test-push', async (req, res) => {
         }
       },
       apns: {
+        headers: {
+          'apns-priority': '10'  // High priority for iOS
+        },
         payload: {
           aps: {
             contentAvailable: true, 
