@@ -24,18 +24,41 @@ app.get('/health', (req, res) => {
   });
 });
 
-// SOS Alert endpoint (unchanged, but removed firebaseInitialized check)
+// Blocked sender IDs (Firebase Installation IDs) - for production, use Firestore
+const BLOCKED_SENDERS = new Set([
+  // Add blocked Firebase Installation IDs here
+  // Example: 'blocked-fid-xyz123',
+]);
+
+// Helper function to check if sender is blocked
+// In production, replace this with Firestore lookup:
+// const blockedDoc = await admin.firestore().collection('blocked_users').doc(sender_id).get();
+// return blockedDoc.exists;
+function isSenderBlocked(sender_id) {
+  return BLOCKED_SENDERS.has(sender_id);
+}
+
+// SOS Alert endpoint
 app.post('/sos', async (req, res) => {
   console.log('📡 SOS request received:', req.body);
   
   try {
-    const { sos_id, sos_type, location, userInfo, timestamp, sender_id } = req.body;
+    const { sender_id, sos_type, location, userInfo, timestamp } = req.body;
     
     // Validate required fields
-    if (!sos_id || !sos_type || !location) {
+    if (!sender_id || !sos_type || !location) {
       return res.status(400).json({ 
         error: 'Missing required fields',
-        required: ['sos_id', 'sos_type', 'location']
+        required: ['sender_id', 'sos_type', 'location']
+      });
+    }
+
+    // Check if sender is blocked
+    if (isSenderBlocked(sender_id)) {
+      console.log(`🚫 Blocked sender attempted SOS: ${sender_id}`);
+      return res.status(403).json({ 
+        error: 'Access denied',
+        message: 'Your account has been restricted from using this service'
       });
     }
 
@@ -48,7 +71,7 @@ app.post('/sos', async (req, res) => {
     }
 
     if (sos_type === 'stop') {
-      console.log(`🛑 Stopping SOS alert: ${sos_id}`);
+      console.log(`🛑 Stopping SOS alert from sender: ${sender_id}`);
       
       // Extract district and user info for stop notification
       const district = userInfo?.district;
@@ -71,10 +94,9 @@ app.post('/sos', async (req, res) => {
         },
         data: {
           type: 'sos_resolved',
-          sos_id: sos_id,
+          sender_id: sender_id,
           district: district,
-          timestamp: timestamp || Date.now().toString(),
-          sender_id: sender_id || 'unknown'
+          timestamp: timestamp || Date.now().toString()
         },
       android: {
         priority: 'high',  // Critical: Forces immediate delivery bypassing Doze mode
@@ -113,7 +135,7 @@ app.post('/sos', async (req, res) => {
         success: true, 
         message: 'SOS alert stopped successfully',
         messageId: stopResponse,
-        sosId: sos_id,
+        senderId: sender_id,
         district: district,
         timestamp: new Date().toISOString()
       });
@@ -128,7 +150,7 @@ app.post('/sos', async (req, res) => {
       });
     }
     
-    console.log(`🚨 Sending SOS alert to district: ${district} (ID: ${sos_id})`);
+    console.log(`🚨 Sending SOS alert to district: ${district} (Sender: ${sender_id})`);
     
     // Extract user info for notification
     const userName = userInfo?.name || 'Someone';
@@ -143,12 +165,11 @@ app.post('/sos', async (req, res) => {
       },
       data: {
         type: 'sos_alert',
+        sender_id: sender_id,
         district: district,
         location: JSON.stringify(location),
         timestamp: timestamp || Date.now().toString(),
-        userInfo: userInfo ? JSON.stringify(userInfo) : '{}',
-        alertId: sos_id,
-        sender_id: sender_id || 'unknown'
+        userInfo: userInfo ? JSON.stringify(userInfo) : '{}'
       },
       android: {
         priority: 'high',  // Critical: Forces immediate delivery bypassing Doze mode
@@ -189,7 +210,7 @@ app.post('/sos', async (req, res) => {
       message: 'SOS alert sent successfully',
       messageId: response,
       topic: `district-${district}`,
-      sosId: sos_id,
+      senderId: sender_id,
       district: district,
       timestamp: new Date().toISOString()
     });
@@ -215,8 +236,8 @@ app.post('/test-push', async (req, res) => {
     // Default to udupi if no district specified
     const targetDistrict = district || 'udupi';
     
-    // Generate test SOS ID
-    const testSosId = 'test-sos';
+    // Generate test sender ID
+    const testSenderId = 'test-sender-fid';
     
     // Create test location data (sample coordinates for Udupi)
     const testLocation = {
@@ -247,13 +268,11 @@ app.post('/test-push', async (req, res) => {
       },
       data: {
         type: 'sos_alert',
-        sos_id: testSosId,
+        sender_id: testSenderId,
         district: targetDistrict,
         location: JSON.stringify(testLocation),
         timestamp: Date.now().toString(),
-        userInfo: JSON.stringify(testUserInfo),
-        alertId: testSosId,
-        sender_id: 'test-endpoint'
+        userInfo: JSON.stringify(testUserInfo)
       },
       android: {
         priority: 'high',  // Critical: Forces immediate delivery bypassing Doze mode
@@ -295,7 +314,7 @@ app.post('/test-push', async (req, res) => {
       messageId: response,
       topic: `district-${targetDistrict}`,
       district: targetDistrict,
-      alertId: testSosId,
+      senderId: testSenderId,
       testData: {
         location: testLocation,
         userInfo: testUserInfo
