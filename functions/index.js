@@ -1,4 +1,5 @@
 const functions = require('firebase-functions');
+const {onSchedule} = require('firebase-functions/v2/scheduler');
 const express = require('express');
 const admin = require('firebase-admin');
 const cors = require('cors');
@@ -786,20 +787,20 @@ exports.api = functions.https.onRequest(app);
  * - ALERT_EXPIRATION_CHECK_INTERVAL: How often to run (default: every 1 hours)
  * - ALERT_EXPIRATION_THRESHOLD_MS: How old alerts must be to expire (default: 1 hour)
  */
-exports.expireOldAlerts = functions.pubsub
-  .schedule(SCHEDULE_CONFIG.ALERT_EXPIRATION_CHECK_INTERVAL)
-  .timeZone('Asia/Kolkata')  // IST timezone
-  .onRun(async (context) => {
-    console.log('⏰ Running scheduled alert expiration check');
+exports.expireOldAlertsScheduled = onSchedule({
+  schedule: SCHEDULE_CONFIG.ALERT_EXPIRATION_CHECK_INTERVAL,
+  timeZone: 'Asia/Kolkata',  // IST timezone
+}, async (event) => {
+  console.log('⏰ Running scheduled alert expiration check');
+  
+  try {
+    const result = await expireOldAlerts();
     
-    try {
-      const result = await expireOldAlerts();
-      
-      console.log('✅ Scheduled alert expiration completed:', result);
-      
-      return result;
-    } catch (error) {
-      console.error('❌ Scheduled alert expiration failed:', error);
-      throw error;
-    }
-  });
+    console.log('✅ Scheduled alert expiration completed:', result);
+    
+    return result;
+  } catch (error) {
+    console.error('❌ Scheduled alert expiration failed:', error);
+    throw error;
+  }
+});
