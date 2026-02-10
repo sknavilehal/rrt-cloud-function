@@ -978,12 +978,15 @@ app.post('/sos', async (req, res) => {
       });
     }
 
-    // Check if sender is blocked
+    // Check if sender is blocked (shadow block - return success but don't process)
     if (await isSenderBlocked(sender_id)) {
-      console.log(`🚫 Blocked sender attempted SOS: ${sender_id}`);
-      return res.status(403).json({ 
-        error: 'Access denied',
-        message: 'Your account has been restricted from using this service'
+      console.log(`🚫 Blocked sender attempted SOS: ${sender_id} (shadow blocked)`);
+      return res.status(200).json({ 
+        success: true,
+        message: 'SOS alert sent successfully',
+        messageId: `blocked-${Date.now()}`,
+        senderId: sender_id,
+        timestamp: new Date().toISOString()
       });
     }
 
