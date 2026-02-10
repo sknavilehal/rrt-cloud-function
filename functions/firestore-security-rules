@@ -1,16 +1,30 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    // Only authenticated admin users or Cloud Functions can access blocked_users
-    match /blocked_users/{userId} {
-      allow read, write: if false; // Deny all client access
-      // Cloud Functions have admin access by default
+    // SOS Alerts - authenticated users only
+    match /sos_alerts/{document} {
+      allow read: if request.auth != null;  // Only authenticated users can read
+      allow write: if false; // Deny direct writes (only via Cloud Functions)
     }
     
-    // Add other collections as needed
-    match /sos_alerts/{alertId} {
-      allow read: if request.auth != null;
-      allow write: if false; // Only Cloud Functions can write
+    // Admins collection - authenticated users only
+    match /admins/{email} {
+      // Check if user has superadmin custom claim (set by Cloud Functions)
+      function isSuperAdmin() {
+        return request.auth != null && 
+               request.auth.token.get('superadmin', false) == true;
+      }
+      
+      // Allow super admins to read/write all admin documents
+      allow read, write: if isSuperAdmin();
+      
+      // Allow admins to read their own document only
+      allow read: if request.auth != null && request.auth.token.email == email;
+    }
+    
+    // Blocked users - deny direct access (only via Cloud Functions)
+    match /blocked_users/{document} {
+      allow read, write: if false;
     }
   }
 }
