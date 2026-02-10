@@ -65,8 +65,9 @@ async function isSenderBlocked(sender_id) {
  * @param {object} location - GPS coordinates {latitude, longitude, accuracy}
  * @param {object} userInfo - User details {name, mobile_number, message}
  * @param {string} district - District name (e.g., "udupi", "mangalore")
+ * @param {string} state - State extracted from user location (last component of location string)
  */
-async function storeSOSAlert(sender_id, active, location = null, userInfo = null, district = null) {
+async function storeSOSAlert(sender_id, active, location = null, userInfo = null, district = null, state = null) {
   if (!FEATURES.ENABLE_SOS_ALERT_SNAPSHOT) {
     console.log('⏭️  SOS alert snapshot disabled');
     return false;
@@ -94,6 +95,10 @@ async function storeSOSAlert(sender_id, active, location = null, userInfo = null
     
     if (active && district) {
       alertData.district = district;
+    }
+    
+    if (active && state) {
+      alertData.state = state;
     }
     
     // Use sender_id as document ID for easy updates
@@ -559,6 +564,7 @@ app.post('/sos', async (req, res) => {
       // Extract user info for notification
       const userName = userInfo?.name || 'Someone';
       const userLocation = userInfo?.location || district.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
+      const state = userLocation.split(',').pop().trim().toUpperCase()
       
       // Prepare FCM message
       const message = {
@@ -610,7 +616,7 @@ app.post('/sos', async (req, res) => {
       console.log('✅ SOS alert sent successfully:', response);
       
       // Store SOS alert snapshot in Firestore for admin dashboard (optional)
-      await storeSOSAlert(sender_id, true, location, userInfo, district);
+      await storeSOSAlert(sender_id, true, location, userInfo, district, state);
       
       res.json({ 
         success: true, 
