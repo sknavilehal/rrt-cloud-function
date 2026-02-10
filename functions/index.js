@@ -403,11 +403,12 @@ app.get('/health', (req, res) => {
 });
 
 // Admin endpoint: Block a user
-app.post('/admin/block-user', async (req, res) => {
+app.post('/admin/block-user', authenticateUser, async (req, res) => {
   console.log('🔒 Block user request received:', req.body);
   
   try {
-    const { sender_id, reason, blocked_by } = req.body;
+    const { sender_id, reason } = req.body;
+    const blocked_by = req.user.email;
     
     // Validate required fields
     if (!sender_id) {
@@ -450,7 +451,7 @@ app.post('/admin/block-user', async (req, res) => {
 });
 
 // Admin endpoint: Unblock a user
-app.post('/admin/unblock-user', async (req, res) => {
+app.post('/admin/unblock-user', authenticateUser, async (req, res) => {
   console.log('🔓 Unblock user request received:', req.body);
   
   try {
@@ -539,6 +540,130 @@ app.get('/admin/sos-alerts', async (req, res) => {
     console.error('❌ Get SOS alerts error:', error);
     res.status(500).json({ 
       error: 'Failed to retrieve SOS alerts',
+      message: error.message
+    });
+  }
+});
+
+// Admin endpoint: Get paginated list of users with search
+app.get('/admin/users', authenticateUser, async (req, res) => {
+  console.log('👥 Get users list request received');
+  
+  try {
+    const page = parseInt(req.query.page) || 1;
+    const pageSize = parseInt(req.query.pageSize) || 50;
+    const search = req.query.search || '';
+    
+    // Get admin profile to check permissions
+    const isSuperAdminUser = isSuperAdmin(req.user.email);
+    let allowedDistricts = [];
+    
+    if (!isSuperAdminUser) {
+      const adminDoc = await getAdmin(req.user.email);
+      if (!adminDoc || !adminDoc.active) {
+        return res.status(403).json({ 
+          error: 'Forbidden',
+          message: 'Admin account is inactive or not found'
+        });
+      }
+      allowedDistricts = adminDoc.assignedDistricts || [];
+    }
+    
+    // Get all SOS alerts to extract unique users
+    let query = admin.firestore().collection('sos_alerts');
+    
+    // Filter by district if admin (not super admin)
+    if (!isSuperAdminUser && allowedDistricts.length > 0) {
+      query = query.where('district', 'in', allowedDistricts);
+    }
+    
+    const snapshot = await query.get();
+    
+    // Build user map (using sender_id as key to get unique users)
+    const userMap = new Map();
+    
+    for (const doc of snapshot.docs) {
+      const data = doc.data();
+      const senderId = doc.id;
+      const userInfo = data.userInfo || {};
+      
+      // Only include if we have user info
+      if (userInfo.name || userInfo.mobile_number) {
+        userMap.set(senderId, {
+          sender_id: senderId,
+          name: userInfo.name || 'Unknown',
+          mobile_number: userInfo.mobile_number || 'N/A',
+          state: data.state || 'Unknown',
+          district: data.district || 'Unknown',
+          blocked: false // Will be updated below
+        });
+      }
+    }
+    
+    // Get blocked users information
+    const blockedSnapshot = await admin.firestore()
+      .collection('blocked_users')
+      .where('blocked', '==', true)
+      .get();
+    
+    const blockedMap = new Map();
+    blockedSnapshot.forEach(doc => {
+      const data = doc.data();
+      blockedMap.set(doc.id, {
+        blocked: true,
+        blockedAt: data.blockedAt?.toDate().toISOString(),
+        blockedBy: data.blockedBy,
+        reason: data.reason
+      });
+    });
+    
+    // Merge blocked info into user map
+    for (const [senderId, userData] of userMap.entries()) {
+      if (blockedMap.has(senderId)) {
+        const blockedInfo = blockedMap.get(senderId);
+        userMap.set(senderId, { ...userData, ...blockedInfo });
+      }
+    }
+    
+    // Convert map to array
+    let users = Array.from(userMap.values());
+    
+    // Apply search filter if provided
+    if (search) {
+      const searchLower = search.toLowerCase();
+      users = users.filter(user => 
+        user.name.toLowerCase().includes(searchLower) ||
+        user.mobile_number.toLowerCase().includes(searchLower) ||
+        user.state.toLowerCase().includes(searchLower) ||
+        user.district.toLowerCase().includes(searchLower)
+      );
+    }
+    
+    // Sort by name
+    users.sort((a, b) => a.name.localeCompare(b.name));
+    
+    // Calculate pagination
+    const total = users.length;
+    const totalPages = Math.ceil(total / pageSize);
+    const startIndex = (page - 1) * pageSize;
+    const endIndex = startIndex + pageSize;
+    const paginatedUsers = users.slice(startIndex, endIndex);
+    
+    console.log(`✅ Found ${total} users (showing ${paginatedUsers.length} on page ${page})`);
+    
+    res.json({ 
+      success: true,
+      users: paginatedUsers,
+      total: total,
+      page: page,
+      pageSize: pageSize,
+      totalPages: totalPages,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('❌ Get users list error:', error);
+    res.status(500).json({ 
+      error: 'Failed to retrieve users',
       message: error.message
     });
   }
@@ -1159,6 +1284,7 @@ app.use((req, res) => {  // No path specified here—it's implied as catch-all
       'GET /admin/blocked-users',
       'GET /admin/sos-alerts?active=true',
       'GET /admin/profile (auth required)',
+      'GET /admin/users (auth required)',
       'GET /admin/admins (super admin only)',
       'POST /admin/admins (super admin only)',
       'PUT /admin/admins/:email (super admin only)',
