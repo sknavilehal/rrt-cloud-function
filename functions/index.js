@@ -28,7 +28,7 @@ const FEATURES = {
 // SCHEDULED FUNCTION CONFIGURATION
 // ============================================================================
 const SCHEDULE_CONFIG = {
-  ALERT_EXPIRATION_CHECK_INTERVAL: 'every 1 hours',  // How often to check for expired alerts (cron syntax or 'every X hours/minutes')
+  ALERT_EXPIRATION_CHECK_INTERVAL: 'every 12 hours',  // How often to check for expired alerts (cron syntax or 'every X hours/minutes')
   ALERT_EXPIRATION_THRESHOLD_MS: 60 * 60 * 1000      // How old an alert must be to expire (default: 1 hour in milliseconds)
 };
 
