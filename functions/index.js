@@ -1,9 +1,15 @@
 const functions = require('firebase-functions');
 const {onSchedule} = require('firebase-functions/v2/scheduler');
+const {defineString} = require('firebase-functions/params');
 const express = require('express');
 const admin = require('firebase-admin');
 const cors = require('cors');
 const helmet = require('helmet');
+const nodemailer = require('nodemailer');
+
+// Define Firebase secrets for Gmail credentials
+const gmailUser = defineString('GMAIL_USER');
+const gmailPass = defineString('GMAIL_PASS');
 
 const app = express();
 
@@ -15,6 +21,81 @@ app.use(express.json());
 // Initialize Firebase Admin SDK (no credentials needed in Cloud Functions)
 admin.initializeApp();
 console.log('✅ Firebase Admin SDK initialized successfully');
+
+// ============================================================================
+// EMAIL CONFIGURATION - Nodemailer setup
+// ============================================================================
+
+/**
+ * Send welcome email to newly created admin
+ * @param {string} email - Admin email address
+ * @param {string} password - Temporary password
+ * @param {array} assignedDistricts - List of assigned districts
+ */
+async function sendWelcomeEmail(email, password, assignedDistricts) {
+  // Create transporter at runtime to access secrets properly
+  const transporter = nodemailer.createTransport({
+    service: 'gmail',
+    auth: {
+      user: gmailUser.value(),
+      pass: gmailPass.value()
+    }
+  });
+  
+  const districtsList = assignedDistricts.length > 0 
+    ? assignedDistricts.map(d => d.toUpperCase()).join(', ')
+    : 'None assigned';
+    
+  const mailOptions = {
+    from: 'RRT Admin <' + gmailUser.value() + '>',
+    to: email,
+    subject: '🔐 Your RRT Admin Account - Login Details',
+    html: `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+        <h2>Welcome to RRT Admin Dashboard</h2>
+        
+        <p>Your administrator account has been created successfully.</p>
+        
+        <div style="background: #f5f5f5; padding: 20px; border-radius: 5px; margin: 20px 0;">
+          <h3 style="margin-top: 0;">Login Credentials</h3>
+          <p><strong>Email:</strong> ${email}</p>
+          <p><strong>Temporary Password:</strong> <code style="background: white; padding: 5px 10px; border-radius: 3px;">${password}</code></p>
+          <p><strong>Assigned Districts:</strong> ${districtsList}</p>
+        </div>
+        
+        <p><strong>Next Steps:</strong></p>
+        <ol>
+          <li>Login to the Admin Dashboard</li>
+          <li>Use the credentials above</li>
+          <li>Change your password using "Reset Password" option on the login screen</li>
+        </ol>
+        
+        <p style="color: #666; font-size: 12px; margin-top: 30px;">
+          This is an automated email. If you did not request this account, please contact support.
+        </p>
+      </div>
+    `,
+    text: `
+Welcome to RRT Admin Dashboard
+
+Your administrator account has been created successfully.
+
+LOGIN CREDENTIALS
+Email: ${email}
+Temporary Password: ${password}
+Assigned Districts: ${districtsList}
+
+NEXT STEPS
+1. Login to the Admin Dashboard
+2. Use the credentials above
+3. Change your password using "Reset Password" option on the login screen
+
+This is an automated email. If you did not request this account, please contact support.
+    `
+  };
+
+  await transporter.sendMail(mailOptions);
+}
 
 // ============================================================================
 // FEATURE FLAGS - Toggle features to control costs
@@ -823,6 +904,15 @@ app.post('/admin/admins', authenticateUser, requireSuperAdmin, async (req, res) 
       .set(adminData);
     
     console.log(`✅ Admin created successfully: ${email}`);
+    
+    // Send welcome email (don't fail if email fails)
+    try {
+      await sendWelcomeEmail(email, password, assignedDistricts || []);
+      console.log(`✅ Welcome email sent to ${email}`);
+    } catch (emailError) {
+      console.error('⚠️ Failed to send welcome email:', emailError);
+      // Continue anyway - admin is created successfully
+    }
     
     res.json({ 
       success: true,
