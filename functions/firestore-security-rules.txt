@@ -1,10 +1,11 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    // SOS Alerts - authenticated users only
+    // SOS Alerts - mobile app reads via Firestore SDK (volunteers are not Firebase Auth users)
+    // App filters by district in query; only Cloud Functions write
     match /sos_alerts/{document} {
-      allow read: if request.auth != null;  // Only authenticated users can read
-      allow write: if false; // Deny direct writes (only via Cloud Functions)
+      allow read: if true;
+      allow write: if false;
     }
     
     // Admins collection - authenticated users only

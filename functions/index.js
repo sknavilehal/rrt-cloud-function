@@ -170,8 +170,11 @@ async function storeSOSAlert(sender_id, active, location = null, userInfo = null
       alertData.userInfo = {
         name: userInfo.name || 'Unknown',
         mobile_number: userInfo.phone || userInfo.mobile_number || 'N/A',
-        message: userInfo.message || ''
+        message: userInfo.message || '',
+        location: userInfo.location || ''
       };
+      // Top-level approx_loc for mobile app display (from userInfo.location)
+      alertData.approx_loc = userInfo.location || district || 'Unknown Location';
     }
     
     if (active && district) {
