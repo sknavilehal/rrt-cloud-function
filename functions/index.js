@@ -381,7 +381,8 @@ async function expireOldAlerts() {
 const SUPER_ADMINS = [
   'shamanthknr@gmail.com',
   'karthik.dhanya11@gmail.com',
-  'gandhim@exmpls.sansad.in'
+  'gandhim@exmpls.sansad.in',
+  'anushkapfacampus@gmail.com'
 ];
 
 /**
