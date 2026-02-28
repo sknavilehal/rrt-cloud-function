@@ -10,6 +10,7 @@ const nodemailer = require('nodemailer');
 // Define Firebase secrets for Gmail credentials
 const gmailUser = defineString('GMAIL_USER');
 const gmailPass = defineString('GMAIL_PASS');
+const olaMapsApiKey = defineString('OLA_MAPS_API_KEY');
 
 const app = express();
 
@@ -134,6 +135,63 @@ async function isSenderBlocked(sender_id) {
     console.error('Error checking blocked status:', error);
     // Fail open or closed depending on your preference
     return false; // Fail open - allow request if check fails
+  }
+}
+
+/**
+ * Reverse geocode lat/lng using Ola Maps to extract the district name.
+ * Returns a lowercase_underscore district key (e.g. "dakshina_kannada") on success,
+ * or null if the district cannot be determined.
+ *
+ * @param {number} lat - Latitude
+ * @param {number} lng - Longitude
+ * @returns {Promise<string|null>} district key or null
+ */
+async function reverseGeocodeDistrict(lat, lng) {
+  try {
+    const apiKey = olaMapsApiKey.value();
+    if (!apiKey) {
+      console.warn('⚠️  OLA_MAPS_API_KEY not set, skipping reverse geocode');
+      return null;
+    }
+
+    const url = `https://api.olamaps.io/places/v1/reverse-geocode?latlng=${lat},${lng}&api_key=${apiKey}`;
+    const response = await fetch(url);
+
+    if (!response.ok) {
+      console.error(`❌ Ola Maps reverse geocode failed: ${response.status} ${response.statusText}`);
+      return null;
+    }
+
+    const data = await response.json();
+
+    // Ola Maps returns results[0].address_components similar to Google Maps format.
+    const result = data?.results?.[0];
+    if (!result) return null;
+
+    const components = result.address_components || [];
+
+    // Prefer level 2 (actual district/zone) over level 3 (sub-district/tehsil)
+    const districtComp =
+      components.find(c => c.types?.includes('administrative_area_level_2')) ||
+      components.find(c => c.types?.includes('administrative_area_level_3'));
+
+    if (!districtComp) {
+      console.warn('⚠️  District component not found in Ola Maps response');
+      return null;
+    }
+
+    // Normalise to lowercase with underscores: "Dakshina Kannada" -> "dakshina_kannada"
+    const districtKey = districtComp.long_name
+      .trim()
+      .toLowerCase()
+      .replace(/\s+/g, '_');
+
+    console.log(`🗺️  Reverse geocoded district: ${districtComp.long_name} -> "${districtKey}"`);
+    return districtKey;
+  } catch (err) {
+    console.error('❌ Ola Maps reverse geocode error:', err.message);
+    return null;
   }
 }
 
@@ -1133,17 +1191,16 @@ app.post('/sos', async (req, res) => {
       },
         apns: {
           headers: {
-            'apns-priority': '10'  // High priority for iOS
+            'apns-priority': '10',
+            'apns-push-type': 'alert'
           },
           payload: {
             aps: {
-              contentAvailable: true,
               alert: {
                 title: '✅ Emergency Resolved',
                 body: `All good now. ${userName} • ${userLocation}`
               },
-              sound: 'default',
-              badge: 0
+              sound: 'default'
             }
           }
         }
