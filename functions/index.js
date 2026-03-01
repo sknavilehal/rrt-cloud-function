@@ -248,6 +248,21 @@ async function storeSOSAlert(sender_id, active, location = null, userInfo = null
       .collection('sos_alerts')
       .doc(sender_id)
       .set(alertData, { merge: true });
+
+    // Increment global counters when a new SOS is triggered
+    if (active) {
+      const counterUpdate = {
+        totalAlerts: admin.firestore.FieldValue.increment(1),
+        lastAlertAt: admin.firestore.FieldValue.serverTimestamp()
+      };
+      if (district) {
+        counterUpdate[`alertsByDistrict.${district}`] = admin.firestore.FieldValue.increment(1);
+      }
+      await admin.firestore()
+        .collection('stats')
+        .doc('sos_counters')
+        .set(counterUpdate, { merge: true });
+    }
     
     console.log(`📝 SOS alert ${active ? 'activated' : 'deactivated'} in Firestore for ${sender_id}`);
     return true;
@@ -1320,57 +1335,137 @@ app.post('/sos', async (req, res) => {
 });
 
 // Test push notification endpoint
+//
+// Accepts (all optional, sensible defaults provided):
+//   type        - "sos_alert" (default) | "stop"
+//   district    - e.g. "udupi" (default)
+//   sender_id   - document ID used in Firestore (default: "test-sender-fid")
+//   name        - display name in notification body
+//   phone       - phone number stored in userInfo
+//   message     - optional message stored in userInfo
+//   approx_loc  - human-readable location string
+//   latitude    - GPS latitude  (sos_alert only)
+//   longitude   - GPS longitude (sos_alert only)
+//   accuracy    - GPS accuracy  (sos_alert only)
 app.post('/test-push', async (req, res) => {
   console.log('📡 Test push notification request received:', req.body);
-  
+
   try {
-    const { district, title, body } = req.body;
-    
-    // Default to udupi if no district specified
-    const targetDistrict = district || 'udupi';
-    
-    // Generate test sender ID
-    const testSenderId = 'test-sender-fid';
-    
-    // Create test location data (sample coordinates for Udupi)
-    const testLocation = {
-      latitude: 13.3409,
-      longitude: 74.7421,
-      accuracy: 10
-    };
-    
-    // Create test user info
+    const {
+      type       = 'sos_alert',
+      district   = 'udupi',
+      sender_id  = 'test-sender-fid',
+      name       = 'Test User',
+      phone      = '+91-XXXX-XXXX',
+      message    = '',
+      approx_loc,
+      latitude   = 13.3409,
+      longitude  = 74.7421,
+      accuracy   = 10
+    } = req.body;
+
+    if (!['sos_alert', 'stop'].includes(type)) {
+      return res.status(400).json({
+        error: 'Invalid type',
+        message: 'type must be either "sos_alert" or "stop"'
+      });
+    }
+
+    const districtLabel = district.charAt(0).toUpperCase() + district.slice(1);
+    const locationLabel = approx_loc || `${districtLabel} Test Location`;
+
     const testUserInfo = {
-      name: 'Test User',
-      district: targetDistrict,
-      location: `${targetDistrict.charAt(0).toUpperCase() + targetDistrict.slice(1)} Test Location`,
-      phone: '+91-XXXX-XXXX'
+      name,
+      district,
+      location: locationLabel,
+      phone,
+      message
     };
-    
-    const userName = title || testUserInfo.name;
-    const userLocation = body || testUserInfo.location;
-    
-    console.log(`🧪 Sending test SOS alert to district: ${targetDistrict}`);
-    
-    // Prepare test FCM message (matching SOS alert structure)
-    const message = {
-      topic: `district-${targetDistrict}`,
+
+    // ── STOP ────────────────────────────────────────────────────────────────
+    if (type === 'stop') {
+      console.log(`🧪 Sending test STOP notification to district: ${district}`);
+
+      const stopMessage = {
+        topic: `district-${district}`,
+        notification: {
+          title: '✅ Emergency Resolved',
+          body: `All good now. ${name} • ${locationLabel}`
+        },
+        data: {
+          type: 'sos_resolved',
+          sender_id,
+          district,
+          timestamp: Date.now().toString()
+        },
+        android: {
+          priority: 'high',
+          notification: {
+            channelId: 'sos_alerts',
+            icon: 'ic_notification',
+            color: '#00FF00',
+            sound: 'default',
+            priority: 'high'
+          }
+        },
+        apns: {
+          headers: {
+            'apns-priority': '10',
+            'apns-push-type': 'alert'
+          },
+          payload: {
+            aps: {
+              alert: {
+                title: '✅ Emergency Resolved',
+                body: `All good now. ${name} • ${locationLabel}`
+              },
+              sound: 'default'
+            }
+          }
+        }
+      };
+
+      const stopResponse = await admin.messaging().send(stopMessage);
+      console.log('✅ Test STOP notification sent:', stopResponse);
+
+      await storeSOSAlert(sender_id, false);
+
+      return res.json({
+        success: true,
+        message: 'Test STOP notification sent successfully',
+        type: 'stop',
+        messageId: stopResponse,
+        topic: `district-${district}`,
+        district,
+        senderId: sender_id,
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    // ── SOS ALERT ───────────────────────────────────────────────────────────
+    console.log(`🧪 Sending test SOS alert to district: ${district}`);
+
+    const testLocation = { latitude, longitude, accuracy };
+    const state = locationLabel.split(',').pop().trim().toUpperCase();
+
+    const sosMessage = {
+      topic: `district-${district}`,
       notification: {
-        title: '🧪 Test Emergency Alert',
-        body: `Test alert. ${userName} • ${userLocation}`
+        title: '🚨 Emergency Alert',
+        body: `Help needed. ${name} • ${locationLabel}`
       },
       data: {
         type: 'sos_alert',
-        sender_id: testSenderId,
-        district: targetDistrict,
+        sender_id,
+        district,
         location: JSON.stringify(testLocation),
         timestamp: Date.now().toString(),
         userInfo: JSON.stringify(testUserInfo)
       },
       android: {
-        priority: 'high',  // Critical: Forces immediate delivery bypassing Doze mode
+        priority: 'high',
         notification: {
-          channelId: 'sos_alerts',  // Use high-importance channel
+          channelId: 'sos_alerts',
           icon: 'ic_notification',
           color: '#FF0000',
           sound: 'default',
@@ -1380,14 +1475,14 @@ app.post('/test-push', async (req, res) => {
       },
       apns: {
         headers: {
-          'apns-priority': '10'  // High priority for iOS
+          'apns-priority': '10'
         },
         payload: {
           aps: {
-            contentAvailable: true, 
+            contentAvailable: true,
             alert: {
-              title: '🧪 Test Emergency Alert',
-              body: `Test SOS alert in ${targetDistrict.toUpperCase()} area`
+              title: '🚨 Emergency Alert',
+              body: `Help needed. ${name} • ${locationLabel}`
             },
             sound: 'default',
             badge: 1
@@ -1396,29 +1491,30 @@ app.post('/test-push', async (req, res) => {
       }
     };
 
-    // Send FCM message
-    const response = await admin.messaging().send(message);
-    
-    console.log('✅ Test notification sent successfully:', response);
-    
-    res.json({ 
-      success: true, 
+    const sosResponse = await admin.messaging().send(sosMessage);
+    console.log('✅ Test SOS alert sent:', sosResponse);
+
+    await storeSOSAlert(sender_id, true, testLocation, testUserInfo, district, state);
+
+    return res.json({
+      success: true,
       message: 'Test SOS alert sent successfully',
-      messageId: response,
-      topic: `district-${targetDistrict}`,
-      district: targetDistrict,
-      senderId: testSenderId,
+      type: 'sos_alert',
+      messageId: sosResponse,
+      topic: `district-${district}`,
+      district,
+      senderId: sender_id,
       testData: {
         location: testLocation,
         userInfo: testUserInfo
       },
       timestamp: new Date().toISOString()
     });
-    
+
   } catch (error) {
     console.error('❌ Test notification error:', error);
-    
-    res.status(500).json({ 
+
+    res.status(500).json({
       error: 'Failed to send test notification',
       message: error.message,
       timestamp: new Date().toISOString()
@@ -1427,11 +1523,61 @@ app.post('/test-push', async (req, res) => {
 });
 
 // 404 handler
+// Reverse geocode a lat/lng to a district key usable as an FCM topic segment.
+// Called by the mobile app on first launch / location update to resolve district.
+// GET /geocode/district?lat=13.3409&lng=74.7421
+app.get('/geocode/district', async (req, res) => {
+  const { lat, lng } = req.query;
+
+  if (!lat || !lng) {
+    return res.status(400).json({
+      error: 'Missing parameters',
+      message: 'lat and lng query parameters are required'
+    });
+  }
+
+  const latitude  = parseFloat(lat);
+  const longitude = parseFloat(lng);
+
+  if (isNaN(latitude) || isNaN(longitude)) {
+    return res.status(400).json({
+      error: 'Invalid parameters',
+      message: 'lat and lng must be valid numbers'
+    });
+  }
+
+  if (latitude < -90 || latitude > 90 || longitude < -180 || longitude > 180) {
+    return res.status(400).json({
+      error: 'Invalid parameters',
+      message: 'lat must be in [-90, 90] and lng in [-180, 180]'
+    });
+  }
+
+  console.log(`📍 /geocode/district request — lat: ${latitude}, lng: ${longitude}`);
+
+  const district = await reverseGeocodeDistrict(latitude, longitude);
+
+  if (!district) {
+    return res.status(404).json({
+      error: 'District not found',
+      message: 'Could not determine district from the provided coordinates'
+    });
+  }
+
+  return res.json({
+    district,
+    fcmTopic: `district-${district}`,
+    lat: latitude,
+    lng: longitude
+  });
+});
+
 app.use((req, res) => {  // No path specified here—it's implied as catch-all
   res.status(404).json({ 
     error: 'Endpoint not found',
     availableEndpoints: [
       'GET /health',
+      'GET /geocode/district?lat=<lat>&lng=<lng>',
       'POST /sos',
       'POST /test-push',
       'POST /admin/block-user',
