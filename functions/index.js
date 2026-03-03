@@ -255,18 +255,20 @@ async function storeSOSAlert(sender_id, active, location = null, userInfo = null
       event: active ? 'triggered' : 'stopped',
       timestamp: admin.firestore.FieldValue.serverTimestamp()
     };
+    // district and userInfo are recorded for both triggered and stopped events
+    if (district) historyData.district = district;
+    if (userInfo) {
+      historyData.userInfo = {
+        name: userInfo.name || 'Unknown',
+        mobile_number: userInfo.phone || userInfo.mobile_number || 'N/A',
+        message: userInfo.message || '',
+        location: userInfo.location || ''
+      };
+    }
+    // location and state are only meaningful when the alert is triggered
     if (active) {
-      if (district) historyData.district = district;
       if (state) historyData.state = state;
       if (location) historyData.location = location;
-      if (userInfo) {
-        historyData.userInfo = {
-          name: userInfo.name || 'Unknown',
-          mobile_number: userInfo.phone || userInfo.mobile_number || 'N/A',
-          message: userInfo.message || '',
-          location: userInfo.location || ''
-        };
-      }
     }
     await admin.firestore()
       .collection('sos_alert_history')
@@ -1139,6 +1141,58 @@ app.delete('/admin/admins/:email', authenticateUser, requireSuperAdmin, async (r
   }
 });
 
+// Feedback / Contact Us endpoint
+app.post('/feedback', async (req, res) => {
+  console.log('📬 Feedback request received:', req.body);
+
+  try {
+    const { name, email, subject, message } = req.body;
+
+    if (!message || message.trim().length === 0) {
+      return res.status(400).json({ error: 'Message is required' });
+    }
+
+    const transporter = nodemailer.createTransport({
+      service: 'gmail',
+      auth: {
+        user: gmailUser.value(),
+        pass: gmailPass.value()
+      }
+    });
+
+    const senderName = (name && name.trim()) ? name.trim() : 'Anonymous';
+    const senderEmail = (email && email.trim()) ? email.trim() : null;
+    const emailSubject = (subject && subject.trim()) ? subject.trim() : 'General';
+
+    await transporter.sendMail({
+      from: `RRT App <${gmailUser.value()}>`,
+      to: 'ask@rapid-response.in',
+      subject: `[App Feedback] ${emailSubject} - from ${senderName}`,
+      text: `Name: ${senderName}\nEmail: ${senderEmail ?? 'Not provided'}\nSubject: ${emailSubject}\n\n${message.trim()}`,
+      html: `
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+          <h2 style="color: #EF4444;">New Feedback from RRT App</h2>
+          <table style="width: 100%; border-collapse: collapse;">
+            <tr><td style="padding: 8px; color: #666;"><strong>From:</strong></td><td style="padding: 8px;">${senderName}</td></tr>
+            <tr><td style="padding: 8px; color: #666;"><strong>Email:</strong></td><td style="padding: 8px;">${senderEmail ? `<a href="mailto:${senderEmail}">${senderEmail}</a>` : '<em style="color:#999">Not provided</em>'}</td></tr>
+            <tr><td style="padding: 8px; color: #666;"><strong>Subject:</strong></td><td style="padding: 8px;">${emailSubject}</td></tr>
+          </table>
+          <div style="background: #f5f5f5; padding: 16px; border-radius: 8px; margin-top: 16px;">
+            <p style="margin: 0; white-space: pre-wrap;">${message.trim()}</p>
+          </div>
+          <p style="color: #999; font-size: 12px; margin-top: 24px;">Sent via RRT App feedback form</p>
+        </div>
+      `
+    });
+
+    console.log(`✅ Feedback email sent from ${senderName}`);
+    res.json({ success: true, message: 'Feedback sent successfully' });
+  } catch (error) {
+    console.error('❌ Failed to send feedback email:', error);
+    res.status(500).json({ error: 'Failed to send feedback', details: error.message });
+  }
+});
+
 // SOS Alert endpoint
 app.post('/sos', async (req, res) => {
   console.log('📡 SOS request received:', req.body);
@@ -1235,7 +1289,7 @@ app.post('/sos', async (req, res) => {
       console.log('✅ Stop notification sent successfully:', stopResponse);
       
       // Update SOS alert status to inactive in Firestore (optional)
-      await storeSOSAlert(sender_id, false);
+      await storeSOSAlert(sender_id, false, null, userInfo, district);
       
       return res.json({ 
         success: true, 
@@ -1436,7 +1490,7 @@ app.post('/test-push', async (req, res) => {
       const stopResponse = await admin.messaging().send(stopMessage);
       console.log('✅ Test STOP notification sent:', stopResponse);
 
-      await storeSOSAlert(sender_id, false);
+      await storeSOSAlert(sender_id, false, null, testUserInfo, district);
 
       return res.json({
         success: true,
