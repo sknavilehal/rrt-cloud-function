@@ -249,21 +249,29 @@ async function storeSOSAlert(sender_id, active, location = null, userInfo = null
       .doc(sender_id)
       .set(alertData, { merge: true });
 
-    // Increment global counters when a new SOS is triggered
+    // Append an immutable event record to the history collection
+    const historyData = {
+      sender_id: sender_id,
+      event: active ? 'triggered' : 'stopped',
+      timestamp: admin.firestore.FieldValue.serverTimestamp()
+    };
     if (active) {
-      const counterUpdate = {
-        totalAlerts: admin.firestore.FieldValue.increment(1),
-        lastAlertAt: admin.firestore.FieldValue.serverTimestamp()
-      };
-      if (district) {
-        counterUpdate[`alertsByDistrict.${district}`] = admin.firestore.FieldValue.increment(1);
+      if (district) historyData.district = district;
+      if (state) historyData.state = state;
+      if (location) historyData.location = location;
+      if (userInfo) {
+        historyData.userInfo = {
+          name: userInfo.name || 'Unknown',
+          mobile_number: userInfo.phone || userInfo.mobile_number || 'N/A',
+          message: userInfo.message || '',
+          location: userInfo.location || ''
+        };
       }
-      await admin.firestore()
-        .collection('stats')
-        .doc('sos_counters')
-        .set(counterUpdate, { merge: true });
     }
-    
+    await admin.firestore()
+      .collection('sos_alert_history')
+      .add(historyData);
+
     console.log(`📝 SOS alert ${active ? 'activated' : 'deactivated'} in Firestore for ${sender_id}`);
     return true;
   } catch (error) {
