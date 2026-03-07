@@ -31,9 +31,10 @@ console.log('✅ Firebase Admin SDK initialized successfully');
  * Send welcome email to newly created admin
  * @param {string} email - Admin email address
  * @param {string} password - Temporary password
- * @param {array} assignedDistricts - List of assigned districts
+ * @param {string[]} assignedDistricts - List of assigned districts (empty for super-admin)
+ * @param {string} role - Admin role: 'admin' or 'super-admin'
  */
-async function sendWelcomeEmail(email, password, assignedDistricts) {
+async function sendWelcomeEmail(email, password, assignedDistricts, role = 'admin') {
   // Create transporter at runtime to access secrets properly
   const transporter = nodemailer.createTransport({
     service: 'gmail',
@@ -42,10 +43,14 @@ async function sendWelcomeEmail(email, password, assignedDistricts) {
       pass: gmailPass.value()
     }
   });
-  
-  const districtsList = assignedDistricts.length > 0 
-    ? assignedDistricts.map(d => d.toUpperCase()).join(', ')
-    : 'None assigned';
+
+  const isSuperAdminRole = role === 'super-admin';
+  const roleLabel = isSuperAdminRole ? 'Super Admin' : 'Admin';
+  const districtsList = isSuperAdminRole
+    ? 'All Districts'
+    : (assignedDistricts.length > 0
+        ? assignedDistricts.map(d => d.toUpperCase()).join(', ')
+        : 'None assigned');
     
   const mailOptions = {
     from: 'RRT Admin <' + gmailUser.value() + '>',
@@ -61,6 +66,7 @@ async function sendWelcomeEmail(email, password, assignedDistricts) {
           <h3 style="margin-top: 0;">Login Credentials</h3>
           <p><strong>Email:</strong> ${email}</p>
           <p><strong>Temporary Password:</strong> <code style="background: white; padding: 5px 10px; border-radius: 3px;">${password}</code></p>
+          <p><strong>Role:</strong> ${roleLabel}</p>
           <p><strong>Assigned Districts:</strong> ${districtsList}</p>
         </div>
         
@@ -84,6 +90,7 @@ Your administrator account has been created successfully.
 LOGIN CREDENTIALS
 Email: ${email}
 Temporary Password: ${password}
+Role: ${roleLabel}
 Assigned Districts: ${districtsList}
 
 NEXT STEPS
@@ -449,24 +456,54 @@ async function expireOldAlerts() {
 // AUTHENTICATION MIDDLEWARE
 // ============================================================================
 
+// ============================================================================
+// SUPER ADMIN CACHE - Fetched from Firestore (admins collection, role: super-admin)
+// with a 1-hour TTL so repeated requests don't hammer the database.
+// ============================================================================
+
+const superAdminCache = {
+  emails: /** @type {string[]|null} */ (null),
+  lastFetched: /** @type {number|null} */ (null),
+  TTL_MS: 60 * 60 * 1000 // 1 hour
+};
+
 /**
- * Super admin emails (hardcoded)
- * 
- * ⚠️ SINGLE SOURCE OF TRUTH ⚠️
- * This is the ONLY place where super admin emails need to be maintained.
- * The system automatically sets custom claims for these users, which are
- * then used by:
- * - Firestore security rules (via custom claims)
- * - Flutter app (via /admin/profile API response)
- * 
- * To add/remove super admins, only modify this list and redeploy cloud functions.
+ * Fetch super-admin emails from Firestore, using an in-memory cache (1-hour TTL).
+ * Super admins are documents in the `admins` collection where role === 'super-admin'.
+ * @returns {Promise<string[]>}
  */
-const SUPER_ADMINS = [
-  'shamanthknr@gmail.com',
-  'karthik.dhanya11@gmail.com',
-  'gandhim@exmpls.sansad.in',
-  'anushkapfacampus@gmail.com'
-];
+async function getSuperAdminEmails() {
+  const now = Date.now();
+  if (
+    superAdminCache.emails !== null &&
+    superAdminCache.lastFetched !== null &&
+    now - superAdminCache.lastFetched < superAdminCache.TTL_MS
+  ) {
+    return superAdminCache.emails;
+  }
+
+  console.log('🔄 Refreshing super admin cache from Firestore...');
+  const snapshot = await admin.firestore()
+    .collection('admins')
+    .where('role', '==', 'super-admin')
+    .get();
+
+  const emails = snapshot.docs.map(doc => doc.id);
+  superAdminCache.emails = emails;
+  superAdminCache.lastFetched = now;
+  console.log(`✅ Super admin cache updated: ${emails.length} super admin(s)`);
+  return emails;
+}
+
+/**
+ * Invalidate the super-admin cache so the next request re-fetches from Firestore.
+ * Call this after creating or deleting a super-admin.
+ */
+function invalidateSuperAdminCache() {
+  superAdminCache.emails = null;
+  superAdminCache.lastFetched = null;
+  console.log('♻️  Super admin cache invalidated');
+}
 
 /**
  * Middleware to verify Firebase ID token
@@ -487,7 +524,7 @@ async function authenticateUser(req, res, next) {
     const decodedToken = await admin.auth().verifyIdToken(idToken);
     
     // Set custom claim for super admins if not already set
-    if (isSuperAdmin(decodedToken.email) && !decodedToken.superadmin) {
+    if (await isSuperAdmin(decodedToken.email) && !decodedToken.superadmin) {
       await admin.auth().setCustomUserClaims(decodedToken.uid, { superadmin: true });
       console.log(`✅ Set superadmin custom claim for ${decodedToken.email}`);
     }
@@ -518,7 +555,7 @@ async function requireSuperAdmin(req, res, next) {
     });
   }
   
-  if (!SUPER_ADMINS.includes(req.user.email)) {
+  if (!await isSuperAdmin(req.user.email)) {
     return res.status(403).json({ 
       error: 'Forbidden',
       message: 'Super admin access required'
@@ -541,10 +578,13 @@ async function getAdmin(email) {
 }
 
 /**
- * Check if user is super admin
+ * Check if email belongs to a super admin (uses cached Firestore lookup).
+ * @param {string} email
+ * @returns {Promise<boolean>}
  */
-function isSuperAdmin(email) {
-  return SUPER_ADMINS.includes(email);
+async function isSuperAdmin(email) {
+  const emails = await getSuperAdminEmails();
+  return emails.includes(email);
 }
 
 // ============================================================================
@@ -724,7 +764,7 @@ app.get('/admin/users', authenticateUser, async (req, res) => {
     const search = req.query.search || '';
     
     // Get admin profile to check permissions
-    const isSuperAdminUser = isSuperAdmin(req.user.email);
+    const isSuperAdminUser = await isSuperAdmin(req.user.email);
     let allowedDistricts = [];
     
     if (!isSuperAdminUser) {
@@ -847,7 +887,7 @@ app.get('/admin/profile', authenticateUser, async (req, res) => {
   console.log('👤 Get profile request received for:', req.user.email);
   
   try {
-    const isSuperAdminUser = isSuperAdmin(req.user.email);
+    const isSuperAdminUser = await isSuperAdmin(req.user.email);
     let adminDoc = null;
     
     if (!isSuperAdminUser) {
@@ -925,8 +965,8 @@ app.post('/admin/admins', authenticateUser, requireSuperAdmin, async (req, res) 
   console.log('➕ Create admin request received:', req.body);
   
   try {
-    const { email, password, assignedDistricts } = req.body;
-    
+    const { email, password, assignedDistricts, role } = req.body;
+
     // Validate required fields
     if (!email || !password) {
       return res.status(400).json({ 
@@ -942,14 +982,12 @@ app.post('/admin/admins', authenticateUser, requireSuperAdmin, async (req, res) 
         error: 'Invalid email format'
       });
     }
-    
-    // Check if email is a super admin
-    if (isSuperAdmin(email)) {
-      return res.status(400).json({ 
-        error: 'Cannot create admin account',
-        message: 'This email is reserved for super admin'
-      });
-    }
+
+    // Resolve role: only 'super-admin' or 'admin' are valid
+    const adminRole = role === 'super-admin' ? 'super-admin' : 'admin';
+
+    // Super-admins see all districts — assigned districts are not applicable
+    const districts = adminRole === 'super-admin' ? [] : (assignedDistricts || []);
     
     // Check if admin already exists in Firestore
     const existingAdmin = await getAdmin(email);
@@ -975,11 +1013,17 @@ app.post('/admin/admins', authenticateUser, requireSuperAdmin, async (req, res) 
         message: authError.message
       });
     }
+
+    // Set superadmin custom claim immediately for super-admin role
+    if (adminRole === 'super-admin') {
+      await admin.auth().setCustomUserClaims(userRecord.uid, { superadmin: true });
+      console.log(`✅ Set superadmin custom claim for ${email}`);
+    }
     
     // Create admin document in Firestore
     const adminData = {
-      role: 'admin',
-      assignedDistricts: assignedDistricts || [],
+      role: adminRole,
+      assignedDistricts: districts,
       active: true,
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
       createdBy: req.user.email
@@ -989,12 +1033,17 @@ app.post('/admin/admins', authenticateUser, requireSuperAdmin, async (req, res) 
       .collection('admins')
       .doc(email)
       .set(adminData);
+
+    // Invalidate cache so the new super-admin is recognised on next request
+    if (adminRole === 'super-admin') {
+      invalidateSuperAdminCache();
+    }
     
-    console.log(`✅ Admin created successfully: ${email}`);
+    console.log(`✅ ${adminRole} created successfully: ${email}`);
     
     // Send welcome email (don't fail if email fails)
     try {
-      await sendWelcomeEmail(email, password, assignedDistricts || []);
+      await sendWelcomeEmail(email, password, districts, adminRole);
       console.log(`✅ Welcome email sent to ${email}`);
     } catch (emailError) {
       console.error('⚠️ Failed to send welcome email:', emailError);
@@ -1029,8 +1078,8 @@ app.put('/admin/admins/:email', authenticateUser, requireSuperAdmin, async (req,
     const { email } = req.params;
     const { assignedDistricts, active } = req.body;
     
-    // Check if email is a super admin
-    if (isSuperAdmin(email)) {
+    // Super admin accounts cannot be modified via API
+    if (await isSuperAdmin(email)) {
       return res.status(400).json({ 
         error: 'Cannot update super admin',
         message: 'Super admin accounts cannot be modified'
@@ -1091,8 +1140,8 @@ app.delete('/admin/admins/:email', authenticateUser, requireSuperAdmin, async (r
   try {
     const { email } = req.params;
     
-    // Check if email is a super admin
-    if (isSuperAdmin(email)) {
+    // Super admin accounts cannot be deleted via API
+    if (await isSuperAdmin(email)) {
       return res.status(400).json({ 
         error: 'Cannot delete super admin',
         message: 'Super admin accounts cannot be deleted'
@@ -1107,6 +1156,8 @@ app.delete('/admin/admins/:email', authenticateUser, requireSuperAdmin, async (r
         message: `Admin with email ${email} does not exist`
       });
     }
+
+    const wasSuper = existingAdmin.role === 'super-admin';
     
     // Get user by email to delete from Auth
     let userRecord;
@@ -1123,6 +1174,11 @@ app.delete('/admin/admins/:email', authenticateUser, requireSuperAdmin, async (r
       .collection('admins')
       .doc(email)
       .delete();
+
+    // Invalidate cache if we just removed a super-admin
+    if (wasSuper) {
+      invalidateSuperAdminCache();
+    }
     
     console.log(`✅ Admin deleted successfully: ${email}`);
     
