@@ -1298,6 +1298,7 @@ app.post('/sos', async (req, res) => {
       
       const userName = userInfo?.name || 'Someone';
       const userLocation = userInfo?.location || district.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
+      const state = userInfo?.state?.toUpperCase() || userLocation.split(',').pop().trim().toUpperCase();
       
       // Send stop notification to all devices in the district
       const stopMessage = {
@@ -1345,7 +1346,7 @@ app.post('/sos', async (req, res) => {
       console.log('✅ Stop notification sent successfully:', stopResponse);
       
       // Update SOS alert status to inactive in Firestore (optional)
-      await storeSOSAlert(sender_id, false, null, userInfo, district);
+      await storeSOSAlert(sender_id, false, null, userInfo, district, state);
       
       return res.json({ 
         success: true, 
@@ -1371,7 +1372,7 @@ app.post('/sos', async (req, res) => {
       // Extract user info for notification
       const userName = userInfo?.name || 'Someone';
       const userLocation = userInfo?.location || district.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
-      const state = userLocation.split(',').pop().trim().toUpperCase()
+      const state = userInfo?.state?.toUpperCase() || userLocation.split(',').pop().trim().toUpperCase();
       
       // Prepare FCM message
       const message = {
