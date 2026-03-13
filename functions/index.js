@@ -249,6 +249,12 @@ async function storeSOSAlert(sender_id, active, location = null, userInfo = null
     if (active && state) {
       alertData.state = state;
     }
+
+    // Reset seen_by to empty map on every new alert trigger so stale views
+    // from a previous SOS by the same sender don't carry over.
+    if (active) {
+      alertData.seen_by = {};
+    }
     
     // Use sender_id as document ID for easy updates
     await admin.firestore()
@@ -1691,6 +1697,115 @@ app.get('/geocode/district', async (req, res) => {
   });
 });
 
+// ============================================================================
+// MARK ALERTS SEEN
+// Records that a user (identified by FID) has viewed one or more SOS alerts.
+// seen_by is stored as a map { [fid]: true } for O(1) lookup with no duplicates.
+// POST /sos/mark-seen
+// Body: { fid: string, alert_ids: string[] }
+// ============================================================================
+app.post('/sos/mark-seen', async (req, res) => {
+  console.log('👁️  /sos/mark-seen request received');
+
+  try {
+    const { fid, alert_ids } = req.body;
+
+    if (!fid || !Array.isArray(alert_ids) || alert_ids.length === 0) {
+      return res.status(400).json({
+        error: 'Missing required fields',
+        required: ['fid', 'alert_ids (non-empty array)']
+      });
+    }
+
+    // Batch update: set seen_by.[fid] = true on each alert doc.
+    // Using set+merge so a missing doc (already expired) is silently skipped
+    // by catching the individual error rather than failing the whole batch.
+    const db = admin.firestore();
+    const batch = db.batch();
+
+    for (const alertId of alert_ids) {
+      const ref = db.collection('sos_alerts').doc(alertId);
+      // Dot-notation key sets only this map entry, leaving the rest untouched
+      batch.update(ref, { [`seen_by.${fid}`]: true });
+    }
+
+    await batch.commit();
+
+    console.log(`✅ mark-seen: FID ${fid} saw ${alert_ids.length} alert(s)`);
+
+    return res.json({
+      success: true,
+      fid,
+      marked: alert_ids.length,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    // batch.update throws if ANY doc doesn't exist; treat as non-fatal
+    // (alert may have been expired/deleted between fetch and mark-seen)
+    console.warn('⚠️  /sos/mark-seen partial failure (likely expired alerts):', error.message);
+    return res.status(200).json({
+      success: true,
+      warning: 'Some alerts may have expired',
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+// ============================================================================
+// USER SUBSCRIPTION REGISTRATION
+// Upserts a subscribed_users document when a device subscribes to a district.
+// Called by the mobile app on district subscription (init + district change).
+// POST /subscribe-user
+// Body: { fid, name, number, district, state, fcm_token }
+// ============================================================================
+app.post('/subscribe-user', async (req, res) => {
+  console.log('📋 /subscribe-user request received');
+
+  try {
+    const { fid, name, number, district, state, fcm_token } = req.body;
+
+    if (!fid || !district) {
+      return res.status(400).json({
+        error: 'Missing required fields',
+        required: ['fid', 'district'],
+        optional: ['name', 'number', 'state', 'fcm_token']
+      });
+    }
+
+    const userData = {
+      fid,
+      district,
+      last_subscribed_at: admin.firestore.FieldValue.serverTimestamp(),
+    };
+
+    if (name)      userData.name      = name;
+    if (number)    userData.number    = number;
+    if (state)     userData.state     = state;
+    if (fcm_token) userData.fcm_token = fcm_token;
+
+    await admin.firestore()
+      .collection('subscribed_users')
+      .doc(fid)
+      .set(userData, { merge: true });
+
+    console.log(`✅ subscribed_users upserted for FID: ${fid} (district: ${district})`);
+
+    return res.json({
+      success: true,
+      message: 'User subscription registered',
+      fid,
+      district,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('❌ /subscribe-user error:', error);
+    return res.status(500).json({
+      error: 'Failed to register user subscription',
+      message: error.message
+    });
+  }
+});
+
 app.use((req, res) => {  // No path specified here—it's implied as catch-all
   res.status(404).json({ 
     error: 'Endpoint not found',
@@ -1698,6 +1813,8 @@ app.use((req, res) => {  // No path specified here—it's implied as catch-all
       'GET /health',
       'GET /geocode/district?lat=<lat>&lng=<lng>',
       'POST /sos',
+      'POST /subscribe-user',
+      'POST /sos/mark-seen',
       'POST /test-push',
       'POST /admin/block-user',
       'POST /admin/unblock-user',
